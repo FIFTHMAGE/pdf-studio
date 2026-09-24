@@ -44,6 +44,8 @@
     downloadsCap: null,
     currentViewport: null,
     docLabel: "",
+    undoStack: [],
+    redoStack: [],
   };
 
   (async function initCapability() {
@@ -123,6 +125,7 @@
   async function addFiles(fileList) {
     const files = Array.from(fileList);
     if (!files.length) return;
+    pushHistory();
     let added = 0;
     for (const file of files) {
       const mime = guessMime(file);
@@ -152,6 +155,9 @@
       updateModeAvailability();
       renderPanel();
       $("#exportBtn").disabled = state.pages.length === 0;
+      updateHistoryButtons();
+    } else {
+      state.undoStack.pop();
     }
   }
 
@@ -471,7 +477,9 @@
       const startX = e.clientX;
       const startRect = boxScreenRect(a);
       const anchorLeft = a.x, anchorRight = a.x + a.w, anchorRowY = startRect.top;
+      let historyPushed = false;
       function onMove(ev) {
+        if (!historyPushed) { pushHistory(); historyPushed = true; }
         const dx = ev.clientX - startX;
         if (edge === "right") {
           const nw = Math.max(16, startRect.w + dx);
@@ -508,6 +516,7 @@
     del.addEventListener("pointerdown", (e) => e.stopPropagation());
     del.addEventListener("click", (e) => {
       e.stopPropagation();
+      pushHistory();
       const pg = state.pages[state.currentIndex];
       pg.annotations = pg.annotations.filter((x) => x.id !== a.id);
       renderOverlayBoxes(); redrawMarks();
@@ -522,7 +531,9 @@
       const startX = e.clientX, startY = e.clientY;
       const startRect = boxScreenRect(a);
       const anchorTop = a.y + a.h, anchorLeft = a.x;
+      let historyPushed = false;
       function onMove(ev) {
+        if (!historyPushed) { pushHistory(); historyPushed = true; }
         const nw = Math.max(16, startRect.w + (ev.clientX - startX));
         const nh = Math.max(16, startRect.h + (ev.clientY - startY));
         const brPdf = toPdfPoint(startRect.left + nw, startRect.top + nh);
@@ -567,8 +578,14 @@
     txt.style.fontFamily = "'Geist', sans-serif";
     txt.style.lineHeight = "1.25";
     txt.textContent = a.text || "";
+    let textHistoryPushed = false;
     txt.addEventListener("pointerdown", (e) => { selectAnno(a.id); e.stopPropagation(); });
-    txt.addEventListener("input", () => { a.text = txt.textContent; });
+    txt.addEventListener("focus", () => { textHistoryPushed = false; });
+    txt.addEventListener("blur", () => { textHistoryPushed = false; });
+    txt.addEventListener("input", () => {
+      if (!textHistoryPushed) { pushHistory(); textHistoryPushed = true; }
+      a.text = txt.textContent;
+    });
     txt.addEventListener("pointerdown", startDragHandler(el, a), true);
     el.appendChild(txt);
     setTimeout(() => { if (a._focus) { txt.focus(); delete a._focus; placeCaretEnd(txt); } }, 0);
@@ -602,8 +619,10 @@
       const startX = e.clientX, startY = e.clientY;
       const r0 = boxScreenRect(a);
       let moved = false;
+      let historyPushed = false;
       function onMove(ev) {
         moved = true;
+        if (!historyPushed) { pushHistory(); historyPushed = true; }
         const dx = ev.clientX - startX, dy = ev.clientY - startY;
         const p1 = toPdfPoint(r0.left + dx, r0.top + dy + r0.h);
         a.x = p1.x; a.y = p1.y;
@@ -619,6 +638,61 @@
   }
 
   function currentPage() { return state.pages[state.currentIndex]; }
+
+  function isTypingTarget(el) {
+    if (!el) return false;
+    return el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable;
+  }
+
+  // ---------------- Undo / redo ----------------
+  // History only tracks state.pages (page list + each page's annotations) —
+  // the actual editable document. Snapshots are plain-JSON deep clones since
+  // pages/annotations never hold functions or live objects.
+
+  const HISTORY_LIMIT = 60;
+
+  function clonePages() { return JSON.parse(JSON.stringify(state.pages)); }
+
+  function pushHistory() {
+    state.undoStack.push(clonePages());
+    if (state.undoStack.length > HISTORY_LIMIT) state.undoStack.shift();
+    state.redoStack.length = 0;
+    updateHistoryButtons();
+  }
+
+  function restorePages(pages) {
+    state.pages = pages;
+    if (state.currentIndex >= state.pages.length) state.currentIndex = state.pages.length - 1;
+    if (state.currentIndex < 0 && state.pages.length) state.currentIndex = 0;
+    state.selectedAnnoId = null;
+    state.selectedPageIds.clear();
+    renderRail();
+    renderCurrentPage();
+    renderPanel();
+    updateModeAvailability();
+    $("#exportBtn").disabled = state.pages.length === 0;
+    updateHistoryButtons();
+  }
+
+  function undo() {
+    if (!state.undoStack.length) return;
+    const prev = state.undoStack.pop();
+    state.redoStack.push(clonePages());
+    restorePages(prev);
+  }
+
+  function redo() {
+    if (!state.redoStack.length) return;
+    const next = state.redoStack.pop();
+    state.undoStack.push(clonePages());
+    restorePages(next);
+  }
+
+  function updateHistoryButtons() {
+    const undoBtn = $("#undoBtn"), redoBtn = $("#redoBtn");
+    if (undoBtn) undoBtn.disabled = state.undoStack.length === 0;
+    if (redoBtn) redoBtn.disabled = state.redoStack.length === 0;
+  }
 
   function setupInteractLayer() {
     const layer = $("#interactLayer");
@@ -649,6 +723,7 @@
       } else if (activeTool === "text") {
         const p = toPdfPoint(px, py);
         const a = { id: uid(), type: "text", x: p.x, y: p.y - 20, w: 220, h: 40, text: "", color: state.color, fontSize: state.fontSize, _focus: true };
+        pushHistory();
         currentPage().annotations.push(a);
         renderOverlayBoxes();
         selectAnno(a.id);
@@ -676,6 +751,7 @@
       if (mode === "draw" && state._liveStroke) {
         const pts = state._liveStroke.points.map((p) => toPdfPoint(p.x, p.y));
         if (pts.length > 1) {
+          pushHistory();
           currentPage().annotations.push({ id: uid(), type: "draw", points: pts, color: state.color, strokeWidth: state.strokeWidth });
         }
         state._liveStroke = null;
@@ -685,6 +761,7 @@
         const p2 = toPdfPoint(Math.max(r.x0, r.x1), Math.max(r.y0, r.y1));
         const w = Math.abs(p2.x - p1.x), h = Math.abs(p1.y - p2.y);
         if (w > 3 && h > 3) {
+          pushHistory();
           currentPage().annotations.push({
             id: uid(), type: r.kind, x: Math.min(p1.x, p2.x), y: Math.min(p1.y, p2.y), w, h,
             color: state.color,
@@ -713,6 +790,7 @@
     const p = toPdfPoint(px, py);
     const dims = state.pendingPlacement;
     const w = dims.wPt, h = dims.hPt;
+    pushHistory();
     currentPage().annotations.push({
       id: uid(), type: "image", x: p.x - w / 2, y: p.y - h / 2, w, h, dataURL: dims.dataURL,
     });
@@ -812,6 +890,7 @@
       const from = parseInt(e.dataTransfer.getData("text/plain"), 10);
       const to = index;
       if (Number.isNaN(from) || from === to) return;
+      pushHistory();
       const [moved] = state.pages.splice(from, 1);
       state.pages.splice(to > from ? to - 1 : to, 0, moved);
       const wasCurrentId = state.pages[state.currentIndex] ? state.pages[state.currentIndex].id : null;
@@ -837,6 +916,7 @@
   }
 
   function rotatePage(index, delta) {
+    pushHistory();
     const pg = state.pages[index];
     pg.userRotation = ((pg.userRotation + delta) % 360 + 360) % 360;
     renderRail();
@@ -844,6 +924,7 @@
   }
 
   function duplicatePage(index) {
+    pushHistory();
     const pg = state.pages[index];
     const copy = JSON.parse(JSON.stringify(pg));
     copy.id = uid();
@@ -853,6 +934,7 @@
   }
 
   function deletePage(index) {
+    pushHistory();
     state.pages.splice(index, 1);
     if (state.currentIndex >= state.pages.length) state.currentIndex = state.pages.length - 1;
     renderRail(); renderCurrentPage(); updateModeAvailability();
@@ -875,6 +957,7 @@
   function deleteSelected() {
     const ids = state.selectedPageIds;
     if (!ids.size) return;
+    pushHistory();
     state.pages = state.pages.filter((p) => !ids.has(p.id));
     state.selectedPageIds.clear();
     if (state.currentIndex >= state.pages.length) state.currentIndex = state.pages.length - 1;
@@ -1207,7 +1290,7 @@
 
   async function setMode(mode) {
     state.mode = mode;
-    state.tool = mode === "annotate" ? "highlight" : mode === "edit" ? "mask" : null;
+    state.tool = mode === "annotate" ? "highlight" : mode === "edit" ? "text" : null;
     $$(".mode-tab").forEach((b) => b.classList.toggle("active", b.dataset.mode === mode));
     if (mode === "forms") await enterFormsMode();
     renderPanel();
@@ -1263,6 +1346,7 @@
         state.color = c;
         const a = selectedAnnotation();
         if (a && COLORABLE_TYPES.includes(a.type)) {
+          pushHistory();
           a.color = c;
           renderOverlayBoxes(); redrawMarks(); selectAnno(a.id);
         }
@@ -1283,14 +1367,20 @@
     number.type = "number"; number.min = String(FONT_SIZE_MIN); number.max = String(FONT_SIZE_MAX); number.step = "1";
     number.value = String(state.fontSize);
 
+    let historyPushed = false;
     function apply(size) {
       state.fontSize = size;
       range.value = String(Math.min(size, 42));
       number.value = String(size);
       const a = selectedAnnotation();
-      if (a && a.type === "text") { a.fontSize = size; renderOverlayBoxes(); selectAnno(a.id); }
+      if (a && a.type === "text") {
+        if (!historyPushed) { pushHistory(); historyPushed = true; }
+        a.fontSize = size; renderOverlayBoxes(); selectAnno(a.id);
+      }
     }
+    range.addEventListener("pointerdown", () => { historyPushed = false; });
     range.addEventListener("input", () => apply(parseInt(range.value, 10)));
+    number.addEventListener("focus", () => { historyPushed = false; });
     number.addEventListener("input", () => {
       const v = parseInt(number.value, 10);
       if (!Number.isNaN(v)) apply(Math.max(FONT_SIZE_MIN, Math.min(FONT_SIZE_MAX, v)));
@@ -1417,6 +1507,7 @@
   }
 
   function insertBlankPage(index) {
+    pushHistory();
     const ref = state.pages[index] || state.pages[0];
     const pg = { id: uid(), kind: "image", sourceId: "_blank_img", sourcePageIndex: 0, baseRotation: 0, userRotation: 0, widthPt: ref ? ref.widthPt : 612, heightPt: ref ? ref.heightPt : 792, annotations: [] };
     if (!state.sources["_blank_img"]) {
@@ -1607,12 +1698,25 @@
     $("#railToggle").addEventListener("click", () => $("#rail").classList.toggle("open"));
     $("#panelToggle").addEventListener("click", () => $("#panel").classList.toggle("open"));
 
+    $("#undoBtn").addEventListener("click", undo);
+    $("#redoBtn").addEventListener("click", redo);
+
     window.addEventListener("keydown", (e) => {
+      const typing = isTypingTarget(document.activeElement);
+
+      if ((e.metaKey || e.ctrlKey) && !typing) {
+        const key = e.key.toLowerCase();
+        if (key === "z" && e.shiftKey) { e.preventDefault(); redo(); return; }
+        if (key === "z") { e.preventDefault(); undo(); return; }
+        if (key === "y") { e.preventDefault(); redo(); return; }
+      }
+
       if (e.key === "Delete" || e.key === "Backspace") {
-        if (state.selectedAnnoId && document.activeElement && document.activeElement.classList && document.activeElement.classList.contains("anno-text")) return;
+        if (state.selectedAnnoId && typing) return;
         if (state.selectedAnnoId) {
           const pg = currentPage();
           if (pg) {
+            pushHistory();
             pg.annotations = pg.annotations.filter((a) => a.id !== state.selectedAnnoId);
             state.selectedAnnoId = null;
             renderOverlayBoxes(); redrawMarks();

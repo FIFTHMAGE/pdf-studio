@@ -154,7 +154,8 @@
   .mode-tabs {
     display: flex;
     gap: 4px;
-    flex: none;
+    flex: 0 1 auto;
+    min-width: 0;
     overflow-x: auto;
     max-width: 100%;
   }
@@ -192,7 +193,9 @@
     flex: none;
   }
   .zoom-ctl button { width: 26px; height: 26px; border-radius: 6px; display: flex; align-items: center; justify-content: center; }
-  .zoom-ctl button:hover { background: var(--surface); }
+  .zoom-ctl button:hover:not(:disabled) { background: var(--surface); }
+  .zoom-ctl button:disabled { opacity: 0.35; cursor: not-allowed; }
+  .zoom-ctl button svg { width: 15px; height: 15px; }
   .zoom-pct { width: 46px; text-align: center; font-size: 11.5px; }
 
   .icon-btn {
@@ -542,10 +545,12 @@
     .drawer-toggle { display: flex; }
     .mode-tab span.label { display: none; }
     .stage { padding: 16px 10px; }
-  }
-  @media (max-width: 520px) {
-    .zoom-pct { display: none; }
+    .topbar { gap: 8px; padding: 8px; }
     .topbar .brand span { display: none; }
+    #zoomCtlGroup { display: none; }
+    #addFilesBtn { display: none; }
+    #exportBtn span.label { display: none; }
+    #exportBtn { padding: 7px 10px; }
   }
 </style>
 </head>
@@ -563,7 +568,7 @@
     <div class="doc-name" id="docName"></div>
     <div class="mode-tabs" id="modeTabs" role="tablist"></div>
     <div class="topbar-spacer"></div>
-    <div class="zoom-ctl">
+    <div class="zoom-ctl" id="zoomCtlGroup">
       <button id="zoomOut" title="Zoom out" aria-label="Zoom out">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35M8 11h6"/></svg>
       </button>
@@ -575,12 +580,20 @@
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9V5a1 1 0 0 1 1-1h4M21 9V5a1 1 0 0 1-1-1h-4M3 15v4a1 1 0 0 0 1 1h4M21 15v4a1 1 0 0 1-1 1h-4"/></svg>
       </button>
     </div>
+    <div class="zoom-ctl history-ctl">
+      <button id="undoBtn" title="Undo (Ctrl+Z)" aria-label="Undo" disabled>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 14L4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>
+      </button>
+      <button id="redoBtn" title="Redo (Ctrl+Shift+Z)" aria-label="Redo" disabled>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 14l5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></svg>
+      </button>
+    </div>
     <button class="icon-btn" id="addFilesBtn" title="Add files" aria-label="Add files">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
     </button>
     <button class="btn btn-primary" id="exportBtn" disabled>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
-      Export
+      <span class="label">Export</span>
     </button>
     <button class="icon-btn drawer-toggle" id="panelToggle" title="Tools panel" aria-label="Toggle tools panel">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
