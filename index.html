@@ -1,0 +1,661 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>PDF Studio</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Boldonse&family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&family=Fraunces:ital,opsz,wght@1,9..144,600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #F3F5F8;
+    --surface: #FFFFFF;
+    --surface-2: #F3F5F8;
+    --canvas-bg: #E7EBF0;
+    --ink: #111A24;
+    --ink-muted: #5A6576;
+    --ink-faint: #8A94A6;
+    --accent: #2E6FE0;
+    --accent-ink: #FFFFFF;
+    --accent-soft: #E6EEFD;
+    --line: #DDE2E9;
+    --line-strong: #C9D0DA;
+    --danger: #C7402B;
+    --danger-soft: #FBE7E2;
+    --success: #1F9D6E;
+    --shadow: 0 8px 24px rgba(17,26,36,0.10), 0 1px 2px rgba(17,26,36,0.06);
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0E1726;
+      --surface: #131E30;
+      --surface-2: #1A2638;
+      --canvas-bg: #0A111C;
+      --ink: #F1F4F8;
+      --ink-muted: #A7B1C2;
+      --ink-faint: #6B7789;
+      --accent: #7EA8FF;
+      --accent-ink: #0E1726;
+      --accent-soft: #1C2D4A;
+      --line: #1E2A3B;
+      --line-strong: #3A4759;
+      --danger: #E2604A;
+      --danger-soft: #3A2420;
+      --success: #3FC28A;
+      --shadow: 0 8px 28px rgba(0,0,0,0.45), 0 1px 2px rgba(0,0,0,0.3);
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0E1726;
+    --surface: #131E30;
+    --surface-2: #1A2638;
+    --canvas-bg: #0A111C;
+    --ink: #F1F4F8;
+    --ink-muted: #A7B1C2;
+    --ink-faint: #6B7789;
+    --accent: #7EA8FF;
+    --accent-ink: #0E1726;
+    --accent-soft: #1C2D4A;
+    --line: #1E2A3B;
+    --line-strong: #3A4759;
+    --danger: #E2604A;
+    --danger-soft: #3A2420;
+    --success: #3FC28A;
+    --shadow: 0 8px 28px rgba(0,0,0,0.45), 0 1px 2px rgba(0,0,0,0.3);
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Geist", system-ui, -apple-system, sans-serif;
+    font-size: 13px;
+    line-height: 1.45;
+    height: 100%;
+    overflow: hidden;
+  }
+  html { height: 100%; }
+  button { font-family: inherit; }
+  ::selection { background: var(--accent-soft); }
+  .mono { font-family: "Geist Mono", ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+
+  button {
+    cursor: pointer;
+    border: 1px solid transparent;
+    background: none;
+    color: inherit;
+  }
+  button:focus-visible, input:focus-visible, [tabindex]:focus-visible, textarea:focus-visible, select:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+  input, select, textarea {
+    font-family: inherit;
+    color: inherit;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 6px 8px;
+  }
+
+  #app {
+    height: 100vh;
+    height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  /* ---------- Top bar ---------- */
+  .topbar {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 8px 12px;
+    background: var(--surface-2);
+    border-bottom: 1px solid var(--line);
+    min-height: 52px;
+    z-index: 40;
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    flex: none;
+    font-family: "Geist", system-ui, sans-serif;
+    font-weight: 600;
+    font-size: 16px;
+    letter-spacing: -0.03em;
+    color: var(--ink);
+    white-space: nowrap;
+  }
+  .brand svg { width: 26px; height: 26px; flex: none; }
+  .doc-name {
+    flex: none;
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--ink-muted);
+    font-size: 12px;
+    padding: 4px 8px;
+    border-radius: 6px;
+    background: var(--surface-2);
+    display: none;
+  }
+  .doc-name.show { display: inline-block; }
+
+  .mode-tabs {
+    display: flex;
+    gap: 4px;
+    flex: none;
+    overflow-x: auto;
+    max-width: 100%;
+  }
+  .mode-tab {
+    padding: 6px 12px;
+    border-radius: 6px;
+    border: 1px solid transparent;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--ink-muted);
+    white-space: nowrap;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .mode-tab:hover:not(:disabled) { color: var(--ink); }
+  .mode-tab svg { width: 15px; height: 15px; flex: none; }
+  .mode-tab.active {
+    background: var(--surface);
+    border-color: var(--line);
+    color: var(--ink);
+  }
+  .mode-tab:disabled { opacity: 0.35; cursor: not-allowed; }
+
+  .topbar-spacer { flex: 1 1 auto; }
+
+  .zoom-ctl {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    background: var(--surface-2);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 3px;
+    flex: none;
+  }
+  .zoom-ctl button { width: 26px; height: 26px; border-radius: 6px; display: flex; align-items: center; justify-content: center; }
+  .zoom-ctl button:hover { background: var(--surface); }
+  .zoom-pct { width: 46px; text-align: center; font-size: 11.5px; }
+
+  .icon-btn {
+    width: 32px; height: 32px;
+    border-radius: 7px;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--ink-muted);
+    flex: none;
+  }
+  .icon-btn:hover { background: var(--surface-2); color: var(--ink); }
+  .icon-btn svg { width: 17px; height: 17px; }
+
+  .btn {
+    padding: 7px 13px;
+    border-radius: 7px;
+    font-size: 12.5px;
+    font-weight: 500;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+    flex: none;
+  }
+  .btn svg { width: 14px; height: 14px; }
+  .btn-ghost { background: var(--surface-2); color: var(--ink); border-color: var(--line); }
+  .btn-ghost:hover { background: var(--line); }
+  .btn-primary { background: var(--accent); color: var(--accent-ink); }
+  .btn-primary:hover { filter: brightness(1.06); }
+  .btn-danger { color: var(--danger); }
+  .btn-danger:hover { background: var(--danger-soft); }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  /* ---------- Body layout ---------- */
+  .body-row {
+    flex: 1 1 auto;
+    display: flex;
+    min-height: 0;
+    position: relative;
+  }
+
+  .rail {
+    flex: none;
+    width: 168px;
+    background: var(--surface);
+    border-right: 1px solid var(--line);
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  .rail-head {
+    flex: none;
+    padding: 10px 10px 8px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid var(--line);
+  }
+  .rail-head h2 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-faint); font-weight: 600; }
+  .rail-list {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .thumb {
+    position: relative;
+    border-radius: 8px;
+    border: 2px solid transparent;
+    background: var(--surface-2);
+    cursor: grab;
+    padding: 4px;
+  }
+  .thumb.current { border-color: var(--accent); }
+  .thumb.dragover { border-color: var(--accent); }
+  .thumb.dragging { opacity: 0.4; }
+  .thumb-canvas-wrap {
+    position: relative;
+    border-radius: 4px;
+    overflow: hidden;
+    background: var(--surface);
+    box-shadow: 0 1px 3px rgba(22,32,43,0.15);
+  }
+  .thumb-canvas-wrap canvas { display: block; width: 100%; height: auto; }
+  .thumb-num {
+    position: absolute; left: 4px; bottom: 4px;
+    background: rgba(22,32,43,0.72);
+    color: #fff;
+    font-size: 9.5px;
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-family: "Geist Mono", monospace;
+  }
+  .thumb-check {
+    position: absolute; top: 4px; left: 4px;
+    width: 16px; height: 16px;
+    display: none;
+  }
+  .thumb.select-mode .thumb-check { display: block; }
+  .thumb-tools {
+    position: absolute; top: 4px; right: 4px;
+    display: flex; gap: 2px;
+    opacity: 0;
+    transition: opacity 0.1s;
+  }
+  .thumb:hover .thumb-tools { opacity: 1; }
+  .thumb-tool-btn {
+    width: 18px; height: 18px;
+    border-radius: 4px;
+    background: rgba(22,32,43,0.72);
+    color: #fff;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .thumb-tool-btn:hover { background: rgba(22,32,43,0.9); }
+  .thumb-tool-btn svg { width: 11px; height: 11px; }
+  .rail-foot {
+    flex: none;
+    padding: 8px;
+    border-top: 1px solid var(--line);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .stage {
+    flex: 1 1 auto;
+    min-width: 0;
+    background: var(--canvas-bg);
+    overflow: auto;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding: 36px 24px;
+    position: relative;
+  }
+  .page-stage {
+    position: relative;
+    background: #fff;
+    box-shadow: var(--shadow);
+    flex: none;
+  }
+  .page-canvas, .mark-canvas { display: block; position: absolute; top: 0; left: 0; }
+  .mark-canvas { pointer-events: none; }
+  .interact-layer {
+    position: absolute; inset: 0;
+    pointer-events: auto;
+  }
+  .interact-layer.catching { cursor: crosshair; }
+  .interact-layer.catching.tool-view { cursor: default; }
+  .anno-box {
+    position: absolute;
+    pointer-events: auto;
+    border: 1px dashed transparent;
+  }
+  .anno-box.selected { border-color: var(--accent); }
+  .anno-text {
+    min-width: 24px; min-height: 1.2em;
+    outline: none;
+    white-space: pre-wrap;
+    word-break: break-word;
+    cursor: move;
+    padding: 1px 2px;
+  }
+  .anno-text:focus { cursor: text; }
+  .anno-image { width: 100%; height: 100%; cursor: move; display: block; user-select: none; }
+  .anno-handle {
+    position: absolute; width: 12px; height: 12px;
+    background: var(--accent); border: 2px solid var(--surface);
+    border-radius: 3px;
+    right: -7px; bottom: -7px;
+    cursor: nwse-resize;
+    display: none;
+  }
+  .anno-box.selected .anno-handle { display: block; }
+  .anno-handle-edge {
+    position: absolute; top: 50%; width: 9px; height: 28px;
+    background: var(--accent); border: 2px solid var(--surface);
+    border-radius: 4px;
+    transform: translateY(-50%);
+    cursor: ew-resize;
+    display: none;
+  }
+  .anno-box.selected .anno-handle-edge { display: block; }
+  .anno-handle-left { left: -7px; }
+  .anno-handle-right { right: -7px; }
+  .anno-del {
+    position: absolute; top: -9px; right: -9px;
+    width: 17px; height: 17px; border-radius: 50%;
+    background: var(--danger); color: #fff;
+    display: none;
+    align-items: center; justify-content: center;
+    font-size: 11px; line-height: 1;
+  }
+  .anno-box.selected .anno-del { display: flex; }
+
+  .field-input {
+    position: absolute;
+    pointer-events: auto;
+    border: 1.5px solid var(--accent);
+    background: var(--accent-soft);
+    border-radius: 3px;
+    padding: 0 3px;
+    font-size: 12px;
+    color: var(--ink);
+  }
+  .field-input:focus { background: var(--surface); }
+  .field-checkbox { position: absolute; pointer-events: auto; accent-color: var(--accent); }
+
+  .panel {
+    flex: none;
+    width: 260px;
+    background: var(--surface);
+    border-left: 1px solid var(--line);
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+  }
+  .panel-section {
+    padding: 14px 14px;
+    border-bottom: 1px solid var(--line);
+  }
+  .panel-section h3 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--ink-faint); font-weight: 600; margin-bottom: 10px;
+  }
+  .field-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+  .field-row label { color: var(--ink-muted); font-size: 12px; }
+  .swatches { display: flex; gap: 6px; flex-wrap: wrap; }
+  .swatch {
+    width: 22px; height: 22px; border-radius: 50%;
+    border: 2px solid var(--line);
+  }
+  .swatch.active { border-color: var(--ink); box-shadow: 0 0 0 2px var(--surface) inset; }
+  .tool-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .tool-grid button, .stack button {
+    display: flex; flex-direction: column; align-items: center; gap: 5px;
+    padding: 10px 6px; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--surface-2); color: var(--ink-muted); font-size: 11px; font-weight: 500;
+  }
+  .tool-grid button svg { width: 17px; height: 17px; }
+  .tool-grid button.active, .stack button.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+  .stack { display: flex; flex-direction: column; gap: 6px; }
+  .stack button { flex-direction: row; justify-content: flex-start; padding: 8px 10px; gap: 8px; }
+  .stack button svg { width: 15px; height: 15px; }
+  .range-row { display: flex; align-items: center; gap: 10px; }
+  .range-row input[type="range"] { flex: 1 1 auto; min-width: 0; accent-color: var(--accent); }
+  .range-row input[type="number"] {
+    flex: none; width: 52px; text-align: center;
+    padding: 5px 4px; font-size: 12px;
+    -moz-appearance: textfield;
+  }
+  .range-row input[type="number"]::-webkit-outer-spin-button,
+  .range-row input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+  .hint { font-size: 11.5px; color: var(--ink-faint); line-height: 1.5; }
+
+  .field-list-item {
+    padding: 8px 9px;
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    margin-bottom: 7px;
+    background: var(--surface-2);
+  }
+  .field-list-item .fname {
+    font-family: "Geist Mono", monospace;
+    font-size: 10.5px; color: var(--ink-faint);
+    margin-bottom: 4px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .field-list-item input, .field-list-item select { width: 100%; font-size: 12px; }
+  .field-list-item .radio-opt { display: flex; align-items: center; gap: 6px; font-size: 12px; margin: 3px 0; }
+
+  .sig-pad-wrap { border: 1px dashed var(--line-strong); border-radius: 8px; background: var(--surface-2); }
+  #sigPad { display: block; width: 100%; height: 120px; touch-action: none; cursor: crosshair; }
+  .sig-tabs { display: flex; gap: 6px; margin-bottom: 8px; }
+  .sig-tabs button { flex: 1; padding: 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--surface-2); font-size: 11.5px; }
+  .sig-tabs button.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+  #sigTypeInput { font-family: "Fraunces", Georgia, serif; font-style: italic; font-weight: 600; font-size: 26px; width: 100%; text-align: center; }
+
+  /* ---------- Empty state ---------- */
+  .empty {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    padding: 24px;
+    z-index: 30;
+    background: var(--bg);
+  }
+  .empty-card {
+    max-width: 560px;
+    width: 100%;
+    text-align: center;
+  }
+  .empty-mark { width: 52px; height: 52px; display: block; margin: 0 auto 20px; }
+  .empty-title { font-family: "Boldonse", "Geist", sans-serif; font-weight: 400; font-size: 28px; line-height: 1.15; color: var(--ink); margin: 0 0 12px; text-wrap: balance; }
+  .empty-card p.lead { color: var(--ink-muted); font-size: 15px; margin-bottom: 28px; }
+  .dropzone {
+    border: 2px dashed var(--line-strong);
+    border-radius: 16px;
+    padding: 36px 20px;
+    background: var(--surface);
+    transition: border-color .15s, background .15s;
+  }
+  .dropzone.hover { border-color: var(--accent); background: var(--accent-soft); }
+  .dropzone svg { width: 34px; height: 34px; color: var(--ink-faint); margin-bottom: 10px; }
+  .dropzone p { color: var(--ink-muted); font-size: 12.5px; margin-top: 10px; }
+  .empty-actions { display: flex; gap: 10px; justify-content: center; margin-top: 14px; flex-wrap: wrap; }
+  .feature-row {
+    display: flex; gap: 18px; justify-content: center; margin-top: 28px;
+    flex-wrap: wrap;
+  }
+  .feature-row .feat { width: 96px; }
+  .feature-row .feat svg { width: 20px; height: 20px; color: var(--accent); margin-bottom: 6px; }
+  .feature-row .feat span { display: block; font-size: 11px; color: var(--ink-muted); }
+
+  /* ---------- Status bar ---------- */
+  .statusbar {
+    flex: none;
+    display: flex; align-items: center; gap: 14px;
+    padding: 6px 14px;
+    background: var(--surface);
+    border-top: 1px solid var(--line);
+    font-size: 11.5px;
+    color: var(--ink-muted);
+  }
+  .statusbar .grow { flex: 1; }
+  .toast {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    background: var(--ink); color: var(--bg);
+    padding: 10px 18px; border-radius: 9px;
+    font-size: 12.5px; box-shadow: var(--shadow);
+    z-index: 200;
+    opacity: 0; pointer-events: none;
+    transition: opacity .2s, transform .2s;
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(-4px); }
+  .toast.err { background: var(--danger); color: #fff; }
+
+  #fileInput, #imageInput { display: none; }
+
+  .drawer-toggle { display: none; }
+  @media (max-width: 880px) {
+    .doc-name { display: none !important; }
+    .rail { position: absolute; left: 0; top: 0; bottom: 0; z-index: 25; transform: translateX(-100%); transition: transform .2s; box-shadow: var(--shadow); }
+    .rail.open { transform: translateX(0); }
+    .panel { position: absolute; right: 0; top: 0; bottom: 0; z-index: 25; transform: translateX(100%); transition: transform .2s; box-shadow: var(--shadow); }
+    .panel.open { transform: translateX(0); }
+    .drawer-toggle { display: flex; }
+    .mode-tab span.label { display: none; }
+    .stage { padding: 16px 10px; }
+  }
+  @media (max-width: 520px) {
+    .zoom-pct { display: none; }
+    .topbar .brand span { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<div id="app">
+  <div class="topbar">
+    <button class="icon-btn drawer-toggle" id="railToggle" title="Pages panel" aria-label="Toggle pages panel">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+    </button>
+    <div class="brand">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9" fill="#2E6FE0"/><path fill-rule="evenodd" d="M9.5 6.5H19.5L23.5 10.5V15.5A3.5 3.5 0 0 1 20 19H14.5V25.5H9.5Z M14.5 11H17.5A1 1 0 0 1 18.5 12V13.5A1 1 0 0 1 17.5 14.5H14.5Z" fill="#ffffff"/><path d="M19.5 6.5V10.5H23.5Z" fill="#BFD3FA"/><rect x="16.5" y="22" width="8" height="3.5" rx="1.2" fill="#FFE066"/></svg>
+      <span>PDF Studio</span>
+    </div>
+    <div class="doc-name" id="docName"></div>
+    <div class="mode-tabs" id="modeTabs" role="tablist"></div>
+    <div class="topbar-spacer"></div>
+    <div class="zoom-ctl">
+      <button id="zoomOut" title="Zoom out" aria-label="Zoom out">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35M8 11h6"/></svg>
+      </button>
+      <span class="zoom-pct mono" id="zoomPct">100%</span>
+      <button id="zoomIn" title="Zoom in" aria-label="Zoom in">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35M11 8v6M8 11h6"/></svg>
+      </button>
+      <button id="zoomFit" title="Fit width" aria-label="Fit width">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9V5a1 1 0 0 1 1-1h4M21 9V5a1 1 0 0 1-1-1h-4M3 15v4a1 1 0 0 0 1 1h4M21 15v4a1 1 0 0 1-1 1h-4"/></svg>
+      </button>
+    </div>
+    <button class="icon-btn" id="addFilesBtn" title="Add files" aria-label="Add files">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+    </button>
+    <button class="btn btn-primary" id="exportBtn" disabled>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+      Export
+    </button>
+    <button class="icon-btn drawer-toggle" id="panelToggle" title="Tools panel" aria-label="Toggle tools panel">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+    </button>
+  </div>
+
+  <div class="body-row">
+    <aside class="rail" id="rail">
+      <div class="rail-head">
+        <h2 id="railTitle">Pages</h2>
+        <button class="icon-btn" id="selectModeBtn" title="Select pages" style="width:24px;height:24px;">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+        </button>
+      </div>
+      <div class="rail-list" id="railList"></div>
+      <div class="rail-foot">
+        <button class="btn btn-ghost" id="addPagesBtn" style="justify-content:center;width:100%;">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+          Add files
+        </button>
+        <div id="selectBar" style="display:none; gap:6px; flex-direction:column;">
+          <button class="btn btn-ghost" id="extractBtn" style="justify-content:center;width:100%;">Extract selected</button>
+          <button class="btn btn-danger btn-ghost" id="deleteSelBtn" style="justify-content:center;width:100%;">Delete selected</button>
+        </div>
+      </div>
+    </aside>
+
+    <main class="stage" id="stage">
+      <div class="page-stage" id="pageStage" style="display:none;">
+        <canvas class="page-canvas" id="pageCanvas"></canvas>
+        <canvas class="mark-canvas" id="markCanvas"></canvas>
+        <div class="interact-layer" id="interactLayer"></div>
+      </div>
+
+      <div class="empty" id="emptyState">
+        <div class="empty-card">
+          <svg class="empty-mark" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9" fill="#2E6FE0"/><path fill-rule="evenodd" d="M9.5 6.5H19.5L23.5 10.5V15.5A3.5 3.5 0 0 1 20 19H14.5V25.5H9.5Z M14.5 11H17.5A1 1 0 0 1 18.5 12V13.5A1 1 0 0 1 17.5 14.5H14.5Z" fill="#ffffff"/><path d="M19.5 6.5V10.5H23.5Z" fill="#BFD3FA"/><rect x="16.5" y="22" width="8" height="3.5" rx="1.2" fill="#FFE066"/></svg>
+          <h1 class="empty-title">Edit any PDF in your browser.</h1>
+          <p class="lead">Your files are processed on your computer and never uploaded.</p>
+          <div class="dropzone" id="dropzone">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 16V4m0 0L7 9m5-5l5 5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>
+            <div style="font-weight:500; color:var(--ink);">Drop PDFs or images here</div>
+            <p>or choose files from your computer</p>
+            <div class="empty-actions">
+              <button class="btn btn-primary" id="emptyOpenBtn">Open files</button>
+              <button class="btn btn-ghost" id="emptyImagesBtn">Images &rarr; PDF</button>
+            </div>
+          </div>
+          <div class="feature-row">
+            <div class="feat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg><span>Annotate</span></div>
+            <div class="feat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg><span>Merge &amp; reorder</span></div>
+            <div class="feat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7V5a1 1 0 0 1 1-1h3M4 17v2a1 1 0 0 0 1 1h3m9-14h3a1 1 0 0 1 1 1v2m-1 11h-3M9 9h6v6H9z"/></svg><span>Fill &amp; sign</span></div>
+            <div class="feat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="14" rx="2"/><path d="M3 13l4-4 4 4 5-5 5 5"/></svg><span>JPG &rarr; PDF</span></div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <aside class="panel" id="panel"></aside>
+  </div>
+
+  <div class="statusbar">
+    <span class="mono" id="pageCounter">&mdash;</span>
+    <span id="statusMsg" class="grow"></span>
+    <span>Files stay on your device</span>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<input type="file" id="fileInput" multiple accept=".pdf,application/pdf,.jpg,.jpeg,.png,image/jpeg,image/png">
+<input type="file" id="imageInput" multiple accept=".jpg,.jpeg,.png,image/jpeg,image/png">
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js" integrity="sha512-z8IYLHO8bTgFqj+yrPyIJnzBDf7DDhWwiEsk4sY+Oe6J2M+WQequeGS7qioI5vT6rXgVRb4K1UVQC5ER7MKzKQ==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js" integrity="sha512-q+4liFwdPC/bNdhUpZx6aXDx/h77yEQtn4I1slHydcbZK34nLaR3cAeYSJshoxIOq3mjEf7xJE8YWIUHMn+oCQ==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script src="app.js"></script>
+</body>
+</html>
