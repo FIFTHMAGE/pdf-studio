@@ -46,7 +46,20 @@
     docLabel: "",
     undoStack: [],
     redoStack: [],
+    searchQuery: "",
+    searchMatches: [],
+    searchIndex: -1,
+    searchHighlight: null,
+    indexing: false,
   };
+
+  const _spanCache = new Map();
+  const OCR_SCALE = 2.2;
+  let _ocrWorkerPromise = null;
+  function getOcrWorker() {
+    if (!_ocrWorkerPromise) _ocrWorkerPromise = Tesseract.createWorker("eng");
+    return _ocrWorkerPromise;
+  }
 
   (async function initCapability() {
     try {
@@ -368,6 +381,19 @@
         }
         ctx.stroke();
       }
+    }
+    if (state.searchHighlight && state.searchHighlight.pageIndex === state.currentIndex) {
+      const h = state.searchHighlight;
+      const p1 = toScreenPoint(h.x, h.y), p2 = toScreenPoint(h.x + h.w, h.y + h.h);
+      const x = Math.min(p1.x, p2.x) - 2, y = Math.min(p1.y, p2.y) - 2;
+      const w = Math.abs(p2.x - p1.x) + 4, hh = Math.abs(p2.y - p1.y) + 4;
+      ctx.fillStyle = "#FFB020";
+      ctx.globalAlpha = 0.4;
+      ctx.fillRect(x, y, w, hh);
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = "#E08E00";
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(x, y, w, hh);
     }
     if (state._liveStroke) {
       const pts = state._liveStroke.points;
@@ -968,6 +994,121 @@
     if (state.currentIndex >= state.pages.length) state.currentIndex = state.pages.length - 1;
     renderRail(); renderCurrentPage(); updateModeAvailability();
     $("#exportBtn").disabled = state.pages.length === 0;
+  }
+
+  // ---------------- Search & OCR ----------------
+
+  async function computeSpansForPage(pg) {
+    if (pg.kind !== "pdf") return [];
+    const src = state.sources[pg.sourceId];
+    const page = await src.pdfjsDoc.getPage(pg.sourcePageIndex + 1);
+    const tc = await page.getTextContent();
+    if (tc.items.length) {
+      return tc.items
+        .filter((it) => it.str && it.str.trim())
+        .map((it) => ({
+          text: it.str,
+          x: it.transform[4],
+          y: it.transform[5],
+          w: it.width,
+          h: it.height || Math.hypot(it.transform[2], it.transform[3]) || 10,
+        }));
+    }
+    return ocrPage(page);
+  }
+
+  async function ocrPage(pdfjsPage) {
+    const viewport = pdfjsPage.getViewport({ scale: OCR_SCALE, rotation: 0 });
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.ceil(viewport.width);
+    canvas.height = Math.ceil(viewport.height);
+    const ctx = canvas.getContext("2d");
+    await pdfjsPage.render({ canvasContext: ctx, viewport }).promise;
+    const worker = await getOcrWorker();
+    const { data } = await worker.recognize(canvas);
+    const words = data.words || [];
+    return words
+      .filter((w) => w.text && w.text.trim())
+      .map((w) => {
+        const p1 = viewport.convertToPdfPoint(w.bbox.x0, w.bbox.y0);
+        const p2 = viewport.convertToPdfPoint(w.bbox.x1, w.bbox.y1);
+        const x0 = Math.min(p1[0], p2[0]), x1 = Math.max(p1[0], p2[0]);
+        const y0 = Math.min(p1[1], p2[1]), y1 = Math.max(p1[1], p2[1]);
+        return { text: w.text, x: x0, y: y0, w: x1 - x0, h: y1 - y0, ocr: true };
+      });
+  }
+
+  async function ensureSearchIndex(onProgress) {
+    state.indexing = true;
+    try {
+      for (let i = 0; i < state.pages.length; i++) {
+        const pg = state.pages[i];
+        if (!_spanCache.has(pg.id)) {
+          let spans = [];
+          try { spans = await computeSpansForPage(pg); } catch (e) { console.error("index page failed", e); }
+          _spanCache.set(pg.id, spans);
+          if (onProgress) onProgress(i + 1, state.pages.length);
+        }
+      }
+    } finally {
+      state.indexing = false;
+    }
+  }
+
+  function runSearch(query) {
+    state.searchQuery = query;
+    state.searchMatches = [];
+    const q = query.trim().toLowerCase();
+    if (q) {
+      state.pages.forEach((pg, pageIndex) => {
+        const spans = _spanCache.get(pg.id) || [];
+        spans.forEach((s) => {
+          if (s.text.toLowerCase().includes(q)) state.searchMatches.push({ pageIndex, span: s });
+        });
+      });
+    }
+    if (state.searchIndex >= state.searchMatches.length) state.searchIndex = state.searchMatches.length ? 0 : -1;
+    if (state.searchMatches.length && state.searchIndex < 0) state.searchIndex = 0;
+    updateSearchUI();
+    jumpToCurrentMatch();
+  }
+
+  async function jumpToCurrentMatch() {
+    const m = state.searchMatches[state.searchIndex];
+    if (!m) { state.searchHighlight = null; redrawMarks(); return; }
+    state.searchHighlight = { pageIndex: m.pageIndex, x: m.span.x, y: m.span.y, w: m.span.w, h: m.span.h };
+    if (state.currentIndex !== m.pageIndex) {
+      state.currentIndex = m.pageIndex;
+      await renderCurrentPage();
+      renderRail();
+    } else {
+      redrawMarks();
+    }
+  }
+
+  function searchStep(dir) {
+    if (!state.searchMatches.length) return;
+    state.searchIndex = (state.searchIndex + dir + state.searchMatches.length) % state.searchMatches.length;
+    updateSearchUI();
+    jumpToCurrentMatch();
+  }
+
+  function updateSearchUI() {
+    const status = $("#searchStatus");
+    const prev = $("#searchPrev"), next = $("#searchNext");
+    if (!status) return;
+    if (state.indexing) {
+      status.textContent = "Indexing…";
+    } else if (!state.searchQuery.trim()) {
+      status.textContent = "";
+    } else if (state.searchMatches.length) {
+      status.textContent = (state.searchIndex + 1) + " / " + state.searchMatches.length;
+    } else {
+      status.textContent = "No matches";
+    }
+    const has = state.searchMatches.length > 0;
+    if (prev) prev.disabled = !has;
+    if (next) next.disabled = !has;
   }
 
   // ---------------- Export ----------------
@@ -1845,6 +1986,35 @@
     $("#undoBtn").addEventListener("click", undo);
     $("#redoBtn").addEventListener("click", redo);
 
+    function openSearch() {
+      if (!state.pages.length) return;
+      $("#searchBar").classList.add("open");
+      $("#searchInput").focus();
+      if (!state.indexing) {
+        ensureSearchIndex(() => { updateSearchUI(); runSearch(state.searchQuery); }).then(() => {
+          updateSearchUI();
+          runSearch(state.searchQuery);
+        });
+      }
+      updateSearchUI();
+    }
+    function closeSearch() {
+      $("#searchBar").classList.remove("open");
+      state.searchHighlight = null;
+      redrawMarks();
+    }
+    $("#searchToggle").addEventListener("click", () => {
+      if ($("#searchBar").classList.contains("open")) closeSearch(); else openSearch();
+    });
+    $("#searchClose").addEventListener("click", closeSearch);
+    $("#searchInput").addEventListener("input", (e) => { state.searchIndex = -1; runSearch(e.target.value); });
+    $("#searchInput").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); searchStep(e.shiftKey ? -1 : 1); }
+      if (e.key === "Escape") { e.preventDefault(); closeSearch(); }
+    });
+    $("#searchPrev").addEventListener("click", () => searchStep(-1));
+    $("#searchNext").addEventListener("click", () => searchStep(1));
+
     window.addEventListener("keydown", (e) => {
       const typing = isTypingTarget(document.activeElement);
 
@@ -1853,6 +2023,7 @@
         if (key === "z" && e.shiftKey) { e.preventDefault(); redo(); return; }
         if (key === "z") { e.preventDefault(); undo(); return; }
         if (key === "y") { e.preventDefault(); redo(); return; }
+        if (key === "f") { e.preventDefault(); openSearch(); return; }
       }
 
       if (e.key === "Delete" || e.key === "Backspace") {
@@ -1867,7 +2038,10 @@
           }
         }
       }
-      if (e.key === "Escape") { selectAnno(null); }
+      if (e.key === "Escape") {
+        if ($("#searchBar").classList.contains("open")) { closeSearch(); return; }
+        selectAnno(null);
+      }
     });
 
     window.addEventListener("resize", () => { if (state.fitMode === "width") renderCurrentPage(); });
