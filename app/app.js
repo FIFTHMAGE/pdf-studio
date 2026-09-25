@@ -2,7 +2,7 @@
   "use strict";
 
   pdfjsLib.GlobalWorkerOptions.workerSrc = "pdf.worker.min.js";
-  const { PDFDocument, StandardFonts, rgb, degrees, PDFName } = PDFLib;
+  const { PDFDocument, StandardFonts, rgb, degrees, PDFName, PDFDict, PDFRawStream, PDFRef, PDFNumber } = PDFLib;
 
   const $ = (sel) => document.querySelector(sel);
   const $$ = (sel) => Array.from(document.querySelectorAll(sel));
@@ -350,6 +350,10 @@
         ctx.fillRect(Math.min(p1.x, p2.x), Math.min(p1.y, p2.y), Math.abs(p2.x - p1.x), Math.abs(p2.y - p1.y));
         ctx.strokeStyle = "#00000022";
         ctx.strokeRect(Math.min(p1.x, p2.x), Math.min(p1.y, p2.y), Math.abs(p2.x - p1.x), Math.abs(p2.y - p1.y));
+      } else if (a.type === "redact") {
+        const p1 = toScreenPoint(a.x, a.y), p2 = toScreenPoint(a.x + a.w, a.y + a.h);
+        ctx.fillStyle = "#0A0A0A";
+        ctx.fillRect(Math.min(p1.x, p2.x), Math.min(p1.y, p2.y), Math.abs(p2.x - p1.x), Math.abs(p2.y - p1.y));
       } else if (a.type === "draw") {
         if (a.points.length < 2) continue;
         ctx.strokeStyle = hexToCss(a.color);
@@ -379,14 +383,14 @@
     }
     if (state._liveRect) {
       const r = state._liveRect;
-      ctx.fillStyle = r.kind === "whiteout" ? "#ffffff" : hexToCss(state.color);
-      ctx.globalAlpha = r.kind === "whiteout" ? 1 : 0.35;
+      ctx.fillStyle = r.kind === "whiteout" ? "#ffffff" : r.kind === "redact" ? "#0A0A0A" : hexToCss(state.color);
+      ctx.globalAlpha = r.kind === "whiteout" || r.kind === "redact" ? 1 : 0.35;
       ctx.fillRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
       ctx.globalAlpha = 1;
     }
     if (state.selectedAnnoId) {
       const sel = pg.annotations.find((a) => a.id === state.selectedAnnoId);
-      if (sel && (sel.type === "highlight" || sel.type === "whiteout" || sel.type === "draw")) {
+      if (sel && (sel.type === "highlight" || sel.type === "whiteout" || sel.type === "redact" || sel.type === "draw")) {
         drawSelectionOutline(ctx, sel);
       }
     }
@@ -397,7 +401,7 @@
     ctx.strokeStyle = "#2E6FE0";
     ctx.lineWidth = 1.5;
     ctx.setLineDash([5, 4]);
-    if (a.type === "highlight" || a.type === "whiteout") {
+    if (a.type === "highlight" || a.type === "whiteout" || a.type === "redact") {
       const p1 = toScreenPoint(a.x, a.y), p2 = toScreenPoint(a.x + a.w, a.y + a.h);
       const x = Math.min(p1.x, p2.x) - 3, y = Math.min(p1.y, p2.y) - 3;
       const w = Math.abs(p2.x - p1.x) + 6, h = Math.abs(p2.y - p1.y) + 6;
@@ -431,7 +435,7 @@
     const tol = 8 / (state.zoom || 1);
     for (let i = pg.annotations.length - 1; i >= 0; i--) {
       const a = pg.annotations[i];
-      if (a.type === "highlight" || a.type === "whiteout") {
+      if (a.type === "highlight" || a.type === "whiteout" || a.type === "redact") {
         const x0 = Math.min(a.x, a.x + a.w), x1 = Math.max(a.x, a.x + a.w);
         const y0 = Math.min(a.y, a.y + a.h), y1 = Math.max(a.y, a.y + a.h);
         if (p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1) return a.id;
@@ -705,14 +709,14 @@
       const px = e.clientX - rect.left, py = e.clientY - rect.top;
       const activeTool = getActiveTool();
 
-      const selectableTool = !activeTool || activeTool === "highlight" || activeTool === "whiteout" || activeTool === "draw";
+      const selectableTool = !activeTool || activeTool === "highlight" || activeTool === "whiteout" || activeTool === "redact" || activeTool === "draw";
       if (selectableTool) {
         const hitId = hitTestAnnotationAt(px, py);
         if (hitId) { selectAnno(hitId); redrawMarks(); return; }
         if (!activeTool) { selectAnno(null); redrawMarks(); return; }
       }
 
-      if (activeTool === "highlight" || activeTool === "whiteout") {
+      if (activeTool === "highlight" || activeTool === "whiteout" || activeTool === "redact") {
         dragging = true; mode = activeTool;
         state._liveRect = { x0: px, y0: py, x1: px, y1: py, kind: activeTool };
         try { layer.setPointerCapture(e.pointerId); } catch (err) { /* no active pointer to capture */ }
@@ -778,6 +782,7 @@
     if (state.mode === "annotate") return state.tool;
     if (state.mode === "edit") {
       if (state.tool === "mask") return "whiteout";
+      if (state.tool === "redact") return "redact";
       if (state.tool === "text") return "text";
       if (state.tool === "image") return "place-image";
       return null;
@@ -967,7 +972,88 @@
 
   // ---------------- Export ----------------
 
-  async function buildOutputDoc(indices) {
+  const REDACT_RASTER_SCALE = 3;
+
+  async function rasterizePageForRedaction(pg) {
+    const src = state.sources[pg.sourceId];
+    const page = await src.pdfjsDoc.getPage(pg.sourcePageIndex + 1);
+    const viewport = page.getViewport({ scale: REDACT_RASTER_SCALE, rotation: 0 });
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.ceil(viewport.width);
+    canvas.height = Math.ceil(viewport.height);
+    const ctx = canvas.getContext("2d");
+    await page.render({ canvasContext: ctx, viewport }).promise;
+    ctx.fillStyle = "#000000";
+    for (const a of pg.annotations) {
+      if (a.type !== "redact") continue;
+      const p1 = viewport.convertToViewportPoint(a.x, a.y);
+      const p2 = viewport.convertToViewportPoint(a.x + a.w, a.y + a.h);
+      const x = Math.min(p1[0], p2[0]), y = Math.min(p1[1], p2[1]);
+      const w = Math.abs(p2[0] - p1[0]), h = Math.abs(p2[1] - p1[1]);
+      ctx.fillRect(x, y, w, h);
+    }
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+    return dataURLToBytes(dataUrl);
+  }
+
+  const COMPRESS_PRESETS = {
+    light: { quality: 0.82, maxDim: 2200 },
+    recommended: { quality: 0.62, maxDim: 1600 },
+    strong: { quality: 0.42, maxDim: 1100 },
+  };
+
+  async function compressImagesInDoc(outDoc, opts) {
+    const quality = opts.quality, maxDim = opts.maxDim;
+    const seen = new Set();
+    for (const page of outDoc.getPages()) {
+      let xobjDict;
+      try {
+        const resources = page.node.Resources();
+        xobjDict = resources ? resources.lookup(PDFName.of("XObject"), PDFDict) : null;
+      } catch (e) { xobjDict = null; }
+      if (!xobjDict) continue;
+      for (const key of xobjDict.keys()) {
+        const ref = xobjDict.get(key);
+        if (!(ref instanceof PDFRef)) continue;
+        const tag = ref.toString();
+        if (seen.has(tag)) continue;
+        seen.add(tag);
+        let stream;
+        try { stream = outDoc.context.lookup(ref); } catch (e) { continue; }
+        if (!(stream instanceof PDFRawStream)) continue;
+        const dict = stream.dict;
+        const subtype = dict.get(PDFName.of("Subtype"));
+        if (!subtype || subtype.toString() !== "/Image") continue;
+        const filter = dict.get(PDFName.of("Filter"));
+        const filterStr = filter ? filter.toString() : "";
+        if (!filterStr.includes("DCTDecode")) continue; // only JPEGs are recompressed for now
+        try {
+          const origBytes = stream.contents;
+          const blob = new Blob([origBytes], { type: "image/jpeg" });
+          const bitmap = await createImageBitmap(blob);
+          const scale = Math.min(1, maxDim / Math.max(bitmap.width, bitmap.height));
+          const newW = Math.max(1, Math.round(bitmap.width * scale));
+          const newH = Math.max(1, Math.round(bitmap.height * scale));
+          const canvas = document.createElement("canvas");
+          canvas.width = newW; canvas.height = newH;
+          const ctx = canvas.getContext("2d");
+          ctx.drawImage(bitmap, 0, 0, newW, newH);
+          if (bitmap.close) bitmap.close();
+          const newBytes = dataURLToBytes(canvas.toDataURL("image/jpeg", quality));
+          if (newBytes.length >= origBytes.length) continue;
+          dict.set(PDFName.of("Width"), PDFNumber.of(newW));
+          dict.set(PDFName.of("Height"), PDFNumber.of(newH));
+          dict.set(PDFName.of("ColorSpace"), PDFName.of("DeviceRGB"));
+          dict.set(PDFName.of("Length"), PDFNumber.of(newBytes.length));
+          dict.delete(PDFName.of("Decode"));
+          dict.delete(PDFName.of("DecodeParms"));
+          outDoc.context.assign(ref, PDFRawStream.of(dict, newBytes));
+        } catch (e) { console.error("compress image failed", e); }
+      }
+    }
+  }
+
+  async function buildOutputDoc(indices, opts) {
     const outDoc = await PDFDocument.create();
     const font = await outDoc.embedFont(StandardFonts.Helvetica);
     const libDocCache = {};
@@ -975,7 +1061,13 @@
     for (const i of idxList) {
       const pg = state.pages[i];
       let outPage;
-      if (pg.kind === "pdf") {
+      const flattenForRedaction = pg.kind === "pdf" && pg.annotations.some((a) => a.type === "redact");
+      if (flattenForRedaction) {
+        const jpgBytes = await rasterizePageForRedaction(pg);
+        const img = await outDoc.embedJpg(jpgBytes);
+        outPage = outDoc.addPage([pg.widthPt, pg.heightPt]);
+        outPage.drawImage(img, { x: 0, y: 0, width: pg.widthPt, height: pg.heightPt });
+      } else if (pg.kind === "pdf") {
         if (!libDocCache[pg.sourceId]) {
           libDocCache[pg.sourceId] = await PDFDocument.load(state.sources[pg.sourceId].bytes);
         }
@@ -995,18 +1087,23 @@
       }
       const totalRotation = ((pg.baseRotation + pg.userRotation) % 360 + 360) % 360;
       outPage.setRotation(degrees(totalRotation));
-      await drawAnnotations(outDoc, outPage, pg, font);
+      await drawAnnotations(outDoc, outPage, pg, font, flattenForRedaction);
+    }
+    if (opts && opts.compress) {
+      await compressImagesInDoc(outDoc, opts.compress);
     }
     return outDoc.save();
   }
 
-  async function drawAnnotations(outDoc, page, pg, font) {
+  async function drawAnnotations(outDoc, page, pg, font, skipRedact) {
     for (const a of pg.annotations) {
       try {
         if (a.type === "highlight") {
           page.drawRectangle({ x: a.x, y: a.y, width: a.w, height: a.h, color: hexToPdfColor(a.color), opacity: 0.35 });
         } else if (a.type === "whiteout") {
           page.drawRectangle({ x: a.x, y: a.y, width: a.w, height: a.h, color: rgb(1, 1, 1) });
+        } else if (a.type === "redact") {
+          if (!skipRedact) page.drawRectangle({ x: a.x, y: a.y, width: a.w, height: a.h, color: rgb(0.04, 0.04, 0.04) });
         } else if (a.type === "draw") {
           for (let i = 1; i < a.points.length; i++) {
             page.drawLine({ start: a.points[i - 1], end: a.points[i], thickness: a.strokeWidth, color: hexToPdfColor(a.color) });
@@ -1046,6 +1143,20 @@
     } catch (e) {
       console.error(e);
       toast("Export failed: " + e.message, "err");
+    } finally { setStatus(""); }
+  }
+
+  async function exportCompressedDocument(presetKey) {
+    if (!state.pages.length) return;
+    const preset = COMPRESS_PRESETS[presetKey] || COMPRESS_PRESETS.recommended;
+    setStatus("Compressing…");
+    try {
+      const bytes = await buildOutputDoc(null, { compress: preset });
+      const name = (state.docLabel || "document").replace(/\.pdf$/i, "") + "-compressed.pdf";
+      await triggerDownload(bytes, name);
+    } catch (e) {
+      console.error(e);
+      toast("Compression failed: " + e.message, "err");
     } finally { setStatus(""); }
   }
 
@@ -1445,19 +1556,26 @@
     sec.appendChild(el("h3", "", "Edit tool"));
     const grid = el("div", "tool-grid");
     grid.appendChild(toolGridBtn("Mask", "M3 3h18v18H3z", state.tool === "mask", () => setTool("mask")));
+    grid.appendChild(toolGridBtn("Redact", "M3 3h18v18H3z M7 8h10 M7 12h10 M7 16h6", state.tool === "redact", () => setTool("redact")));
     grid.appendChild(toolGridBtn("Add text", "M12 20h9M16.5 3.5a2.12 2.12 0 013 3L7 19l-4 1 1-4L16.5 3.5z", state.tool === "text", () => setTool("text")));
     grid.appendChild(toolGridBtn("Replace image", "M3 3h18v18H3z M8.5 10a1.5 1.5 0 100-3 1.5 1.5 0 000 3z M21 15l-5-5L5 21", state.tool === "image", () => triggerImagePlacement()));
     sec.appendChild(grid);
-    sec.appendChild(el("div", "hint", "<b>Mask</b> covers existing text or images with a white box. Then use <b>Add text</b> to type the replacement on top."));
-    wrap.appendChild(sec);
-    const sec2 = el("div", "panel-section");
-    sec2.appendChild(el("h3", "", "Color"));
-    sec2.appendChild(swatchRow(() => {}));
-    if (state.tool === "text") {
-      sec2.appendChild(el("h3", "", "Font size"));
-      sec2.appendChild(fontSizeRow());
+    if (state.tool === "redact") {
+      sec.appendChild(el("div", "hint", "<b>Redact</b> permanently removes the underlying content on export — the page is flattened to an image, so covered text can't be recovered or selected. Use <b>Mask</b> instead if you just want a quick visual cover and want to keep the page editable."));
+    } else {
+      sec.appendChild(el("div", "hint", "<b>Mask</b> covers existing text or images with a white box. Then use <b>Add text</b> to type the replacement on top."));
     }
-    wrap.appendChild(sec2);
+    wrap.appendChild(sec);
+    if (state.tool !== "mask" && state.tool !== "redact") {
+      const sec2 = el("div", "panel-section");
+      sec2.appendChild(el("h3", "", "Color"));
+      sec2.appendChild(swatchRow(() => {}));
+      if (state.tool === "text") {
+        sec2.appendChild(el("h3", "", "Font size"));
+        sec2.appendChild(fontSizeRow());
+      }
+      wrap.appendChild(sec2);
+    }
     return wrap;
   }
 
@@ -1496,7 +1614,33 @@
     sec2.appendChild(el("h3", "", "Multiple pages"));
     sec2.appendChild(el("div", "hint", "Tap the checkmark icon above the page list to select several pages, then extract them as a new PDF or delete them."));
     wrap.appendChild(sec2);
+    wrap.appendChild(sectionCompress());
     return wrap;
+  }
+
+  function sectionCompress() {
+    const sec = el("div", "panel-section");
+    sec.appendChild(el("h3", "", "Compress"));
+    sec.appendChild(el("div", "hint", "Shrinks photos and scanned images embedded in this PDF to reduce file size. Text and vector content are left untouched."));
+    const select = document.createElement("select");
+    select.style.width = "100%";
+    [
+      { v: "light", label: "Light — higher quality" },
+      { v: "recommended", label: "Recommended" },
+      { v: "strong", label: "Strong — smallest file" },
+    ].forEach((o) => {
+      const opt = document.createElement("option");
+      opt.value = o.v; opt.textContent = o.label;
+      if (o.v === "recommended") opt.selected = true;
+      select.appendChild(opt);
+    });
+    sec.appendChild(select);
+    const btn = document.createElement("button");
+    btn.className = "btn btn-primary"; btn.style.width = "100%"; btn.style.justifyContent = "center"; btn.style.marginTop = "10px";
+    btn.textContent = "Compress & download";
+    btn.addEventListener("click", () => exportCompressedDocument(select.value));
+    sec.appendChild(btn);
+    return sec;
   }
 
   function stackBtn(label, onClick) {
