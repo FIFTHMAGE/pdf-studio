@@ -2,7 +2,7 @@
   "use strict";
 
   pdfjsLib.GlobalWorkerOptions.workerSrc = "pdf.worker.min.js";
-  const { PDFDocument, StandardFonts, rgb, degrees, PDFName, PDFDict, PDFRawStream, PDFRef, PDFNumber } = PDFLib;
+  const { PDFDocument, StandardFonts, rgb, degrees, PDFName, PDFDict, PDFRawStream, PDFRef, PDFNumber, PDFString, PDFHexString, PDFArray, PDFStream } = PDFLib;
 
   const $ = (sel) => document.querySelector(sel);
   const $$ = (sel) => Array.from(document.querySelectorAll(sel));
@@ -174,9 +174,68 @@
     }
   }
 
+  function promptPassword(message) {
+    return new Promise((resolve) => {
+      const overlay = document.createElement("div");
+      overlay.style.cssText = "position:fixed;inset:0;background:rgba(10,14,20,0.55);z-index:9999;display:flex;align-items:center;justify-content:center;";
+      const box = document.createElement("div");
+      box.style.cssText = "background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:20px;width:320px;max-width:90vw;box-shadow:var(--shadow);";
+      const title = document.createElement("div");
+      title.textContent = message;
+      title.style.cssText = "font-size:14px;margin-bottom:10px;color:var(--ink);";
+      const input = document.createElement("input");
+      input.type = "password"; input.style.width = "100%"; input.autocomplete = "current-password";
+      const row = document.createElement("div");
+      row.style.cssText = "display:flex;gap:8px;margin-top:12px;justify-content:flex-end;";
+      const cancelBtn = document.createElement("button");
+      cancelBtn.textContent = "Cancel";
+      const okBtn = document.createElement("button");
+      okBtn.className = "btn btn-primary";
+      okBtn.textContent = "Unlock";
+      function done(val) { document.body.removeChild(overlay); resolve(val); }
+      cancelBtn.addEventListener("click", () => done(null));
+      okBtn.addEventListener("click", () => done(input.value));
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") { e.preventDefault(); done(input.value); }
+        if (e.key === "Escape") { e.preventDefault(); done(null); }
+      });
+      row.appendChild(cancelBtn); row.appendChild(okBtn);
+      box.appendChild(title); box.appendChild(input); box.appendChild(row);
+      overlay.appendChild(box);
+      document.body.appendChild(overlay);
+      input.focus();
+    });
+  }
+
   async function addPdfSource(file) {
-    const bytes = await fileToBytes(file);
-    const pdfjsDoc = await pdfjsLib.getDocument({ data: bytes.slice() }).promise;
+    let bytes = await fileToBytes(file);
+    let pdfjsDoc;
+    try {
+      pdfjsDoc = await pdfjsLib.getDocument({ data: bytes.slice() }).promise;
+    } catch (e) {
+      if (e && e.name === "PasswordException") {
+        for (;;) {
+          const password = await promptPassword(file.name + " is password protected. Enter the password to unlock it:");
+          if (password === null) throw new Error("Password required to open " + file.name);
+          try {
+            await pdfjsLib.getDocument({ data: bytes.slice(), password }).promise;
+            setStatus("Unlocking " + file.name + "…");
+            const unlockedBytes = await unlockPdfBytes(bytes, password);
+            bytes = unlockedBytes;
+            pdfjsDoc = await pdfjsLib.getDocument({ data: bytes.slice() }).promise;
+            setStatus("");
+            toast(file.name + ": unlocked (flattened to images; text is no longer selectable)");
+            break;
+          } catch (e2) {
+            if (e2 && e2.name === "PasswordException") { toast("Incorrect password", "err"); continue; }
+            setStatus("");
+            throw e2;
+          }
+        }
+      } else {
+        throw e;
+      }
+    }
     const sourceId = uid();
     state.sources[sourceId] = {
       id: sourceId, kind: "pdf", name: file.name, bytes, pdfjsDoc, numPages: pdfjsDoc.numPages,
@@ -1137,6 +1196,218 @@
     return dataURLToBytes(dataUrl);
   }
 
+  // ---------------- Password protect / unlock (PDF standard security handler, AESV2/R4) ----------------
+
+  function md5(bytes) {
+    function rotl(x, c) { return (x << c) | (x >>> (32 - c)); }
+    const s = [7,12,17,22,7,12,17,22,7,12,17,22,7,12,17,22,5,9,14,20,5,9,14,20,5,9,14,20,5,9,14,20,4,11,16,23,4,11,16,23,4,11,16,23,4,11,16,23,6,10,15,21,6,10,15,21,6,10,15,21,6,10,15,21];
+    const K = new Int32Array([-680876936,-389564586,606105819,-1044525330,-176418897,1200080426,-1473231341,-45705983,1770035416,-1958414417,-42063,-1990404162,1804603682,-40341101,-1502002290,1236535329,-165796510,-1069501632,643717713,-373897302,-701558691,38016083,-660478335,-405537848,568446438,-1019803690,-187363961,1163531501,-1444681467,-51403784,1735328473,-1926607734,-378558,-2022574463,1839030562,-35309556,-1530992060,1272893353,-155497632,-1094730640,681279174,-358537222,-722521979,76029189,-640364487,-421815835,530742520,-995338651,-198630844,1126891415,-1416354905,-57434055,1700485571,-1894986606,-1051523,-2054922799,1873313359,-30611744,-1560198380,1309151649,-145523070,-1120210379,718787259,-343485551]);
+    const msgLenBits = bytes.length * 8;
+    const withOne = bytes.length + 1;
+    const padLen = ((56 - (withOne % 64)) + 64) % 64;
+    const total = withOne + padLen + 8;
+    const buf = new Uint8Array(total);
+    buf.set(bytes, 0);
+    buf[bytes.length] = 0x80;
+    const dv = new DataView(buf.buffer);
+    dv.setUint32(total - 8, msgLenBits >>> 0, true);
+    dv.setUint32(total - 4, Math.floor(msgLenBits / 4294967296), true);
+    let a0 = 0x67452301, b0 = 0xefcdab89, c0 = 0x98badcfe, d0 = 0x10325476;
+    const M = new Int32Array(16);
+    for (let off = 0; off < total; off += 64) {
+      for (let i = 0; i < 16; i++) M[i] = dv.getInt32(off + i * 4, true);
+      let A = a0, B = b0, C = c0, D = d0;
+      for (let i = 0; i < 64; i++) {
+        let F, g;
+        if (i < 16) { F = (B & C) | (~B & D); g = i; }
+        else if (i < 32) { F = (D & B) | (~D & C); g = (5 * i + 1) % 16; }
+        else if (i < 48) { F = B ^ C ^ D; g = (3 * i + 5) % 16; }
+        else { F = C ^ (B | ~D); g = (7 * i) % 16; }
+        F = (F + A + K[i] + M[g]) | 0;
+        A = D; D = C; C = B;
+        B = (B + rotl(F, s[i])) | 0;
+      }
+      a0 = (a0 + A) | 0; b0 = (b0 + B) | 0; c0 = (c0 + C) | 0; d0 = (d0 + D) | 0;
+    }
+    const out = new Uint8Array(16);
+    const odv = new DataView(out.buffer);
+    odv.setInt32(0, a0, true); odv.setInt32(4, b0, true); odv.setInt32(8, c0, true); odv.setInt32(12, d0, true);
+    return out;
+  }
+
+  function rc4(key, data) {
+    const S = new Uint8Array(256);
+    for (let i = 0; i < 256; i++) S[i] = i;
+    let j = 0;
+    for (let i = 0; i < 256; i++) { j = (j + S[i] + key[i % key.length]) & 0xff; const t = S[i]; S[i] = S[j]; S[j] = t; }
+    const out = new Uint8Array(data.length);
+    let i = 0; j = 0;
+    for (let n = 0; n < data.length; n++) {
+      i = (i + 1) & 0xff; j = (j + S[i]) & 0xff;
+      const t = S[i]; S[i] = S[j]; S[j] = t;
+      out[n] = data[n] ^ S[(S[i] + S[j]) & 0xff];
+    }
+    return out;
+  }
+
+  function bytesToHex(b) { return Array.from(b).map((x) => x.toString(16).padStart(2, "0")).join(""); }
+  function concatBytes(arrs) {
+    let len = 0; for (const a of arrs) len += a.length;
+    const out = new Uint8Array(len); let off = 0;
+    for (const a of arrs) { out.set(a, off); off += a.length; }
+    return out;
+  }
+  const PDF_PASSWORD_PAD = new Uint8Array([0x28,0xBF,0x4E,0x5E,0x4E,0x75,0x8A,0x41,0x64,0x00,0x4E,0x56,0xFF,0xFA,0x01,0x08,0x2E,0x2E,0x00,0xB6,0xD0,0x68,0x3E,0x80,0x2F,0x0C,0xA9,0xFE,0x64,0x53,0x69,0x7A]);
+  function padPassword(pwBytes) {
+    const out = new Uint8Array(32);
+    const n = Math.min(pwBytes.length, 32);
+    out.set(pwBytes.subarray(0, n), 0);
+    out.set(PDF_PASSWORD_PAD.subarray(0, 32 - n), n);
+    return out;
+  }
+  function computeEncryptionKey(userPwBytes, oBytes, pValue, id0Bytes, keyLenBytes) {
+    const padded = padPassword(userPwBytes);
+    const pBytes = new Uint8Array(4);
+    new DataView(pBytes.buffer).setInt32(0, pValue, true);
+    let digest = md5(concatBytes([padded, oBytes, pBytes, id0Bytes]));
+    for (let i = 0; i < 50; i++) digest = md5(digest.subarray(0, keyLenBytes));
+    return digest.subarray(0, keyLenBytes);
+  }
+  function computeO(ownerPwBytes, userPwBytes, keyLenBytes) {
+    let digest = md5(padPassword(ownerPwBytes));
+    for (let i = 0; i < 50; i++) digest = md5(digest);
+    const rc4Key = digest.subarray(0, keyLenBytes);
+    let enc = rc4(rc4Key, padPassword(userPwBytes));
+    for (let i = 1; i <= 19; i++) {
+      const xored = new Uint8Array(rc4Key.length);
+      for (let k = 0; k < rc4Key.length; k++) xored[k] = rc4Key[k] ^ i;
+      enc = rc4(xored, enc);
+    }
+    return enc;
+  }
+  function computeU(fileKey, id0Bytes) {
+    const digest = md5(concatBytes([PDF_PASSWORD_PAD, id0Bytes]));
+    let enc = rc4(fileKey, digest);
+    for (let i = 1; i <= 19; i++) {
+      const xored = new Uint8Array(fileKey.length);
+      for (let k = 0; k < fileKey.length; k++) xored[k] = fileKey[k] ^ i;
+      enc = rc4(xored, enc);
+    }
+    const out = new Uint8Array(32);
+    out.set(enc, 0);
+    out.set(crypto.getRandomValues(new Uint8Array(16)), 16);
+    return out;
+  }
+  function pdfObjectKey(fileKey, objNum, genNum) {
+    const extra = new Uint8Array(9);
+    extra[0] = objNum & 0xff; extra[1] = (objNum >> 8) & 0xff; extra[2] = (objNum >> 16) & 0xff;
+    extra[3] = genNum & 0xff; extra[4] = (genNum >> 8) & 0xff;
+    extra[5] = 0x73; extra[6] = 0x41; extra[7] = 0x6c; extra[8] = 0x54; // "sAlT"
+    const digest = md5(concatBytes([fileKey, extra]));
+    const n = Math.min(fileKey.length + 5, 16);
+    return digest.subarray(0, n);
+  }
+  async function aesCbcEncrypt(keyBytes, plainBytes) {
+    const iv = crypto.getRandomValues(new Uint8Array(16));
+    const key = await crypto.subtle.importKey("raw", keyBytes, { name: "AES-CBC" }, false, ["encrypt"]);
+    const ct = await crypto.subtle.encrypt({ name: "AES-CBC", iv }, key, plainBytes);
+    const out = new Uint8Array(16 + ct.byteLength);
+    out.set(iv, 0); out.set(new Uint8Array(ct), 16);
+    return out;
+  }
+
+  async function encryptStringsIn(obj, objNum, genNum, encryptFn) {
+    if (obj instanceof PDFDict) {
+      for (const [key, val] of obj.entries()) {
+        if (val instanceof PDFString || val instanceof PDFHexString) {
+          const enc = await encryptFn(val.asBytes(), objNum, genNum);
+          obj.set(key, PDFHexString.of(bytesToHex(enc)));
+        } else if (val instanceof PDFDict || val instanceof PDFArray) {
+          await encryptStringsIn(val, objNum, genNum, encryptFn);
+        }
+      }
+    } else if (obj instanceof PDFArray) {
+      for (let i = 0; i < obj.size(); i++) {
+        const val = obj.get(i);
+        if (val instanceof PDFString || val instanceof PDFHexString) {
+          const enc = await encryptFn(val.asBytes(), objNum, genNum);
+          obj.set(i, PDFHexString.of(bytesToHex(enc)));
+        } else if (val instanceof PDFDict || val instanceof PDFArray) {
+          await encryptStringsIn(val, objNum, genNum, encryptFn);
+        }
+      }
+    }
+  }
+
+  async function encryptPdfDocument(outDoc, password) {
+    await outDoc.flush();
+    const ctx = outDoc.context;
+    const userPw = new TextEncoder().encode(password);
+    const keyLen = 16;
+    const P = -4;
+    const id0 = crypto.getRandomValues(new Uint8Array(16));
+
+    const O = computeO(userPw, userPw, keyLen);
+    const fileKey = computeEncryptionKey(userPw, O, P, id0, keyLen);
+    const U = computeU(fileKey, id0);
+
+    async function encryptBytesForObject(bytes, objNum, genNum) {
+      const key = pdfObjectKey(fileKey, objNum, genNum);
+      return aesCbcEncrypt(key, bytes);
+    }
+
+    for (const [ref, obj] of ctx.enumerateIndirectObjects()) {
+      const objNum = ref.objectNumber, genNum = ref.generationNumber;
+      if (obj instanceof PDFStream) {
+        const origBytes = obj.getContents ? obj.getContents() : obj.contents;
+        const encBytes = await encryptBytesForObject(origBytes, objNum, genNum);
+        const dict = obj.dict;
+        dict.set(PDFName.of("Length"), PDFNumber.of(encBytes.length));
+        await encryptStringsIn(dict, objNum, genNum, encryptBytesForObject);
+        ctx.assign(ref, PDFRawStream.of(dict, encBytes));
+      } else if (obj instanceof PDFDict || obj instanceof PDFArray) {
+        await encryptStringsIn(obj, objNum, genNum, encryptBytesForObject);
+      }
+    }
+
+    const encDict = ctx.obj({
+      Filter: PDFName.of("Standard"),
+      V: 4, R: 4, Length: 128,
+      CF: ctx.obj({ StdCF: ctx.obj({ CFM: PDFName.of("AESV2"), AuthEvent: PDFName.of("DocOpen"), Length: 16 }) }),
+      StmF: PDFName.of("StdCF"),
+      StrF: PDFName.of("StdCF"),
+      O: PDFHexString.of(bytesToHex(O)),
+      U: PDFHexString.of(bytesToHex(U)),
+      P: P,
+      EncryptMetadata: true,
+    });
+    const encRef = ctx.register(encDict);
+    ctx.trailerInfo.Encrypt = encRef;
+
+    const idHex = PDFHexString.of(bytesToHex(id0));
+    ctx.trailerInfo.ID = ctx.obj([idHex, idHex]);
+  }
+
+  async function unlockPdfBytes(bytes, password) {
+    const pdfjsDoc = await pdfjsLib.getDocument({ data: bytes.slice(), password }).promise;
+    const outDoc = await PDFDocument.create();
+    const numPages = pdfjsDoc.numPages;
+    for (let i = 0; i < numPages; i++) {
+      const page = await pdfjsDoc.getPage(i + 1);
+      const viewport = page.getViewport({ scale: REDACT_RASTER_SCALE, rotation: 0 });
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.ceil(viewport.width);
+      canvas.height = Math.ceil(viewport.height);
+      const ctx2d = canvas.getContext("2d");
+      await page.render({ canvasContext: ctx2d, viewport }).promise;
+      const jpgBytes = dataURLToBytes(canvas.toDataURL("image/jpeg", 0.88));
+      const img = await outDoc.embedJpg(jpgBytes);
+      const outPage = outDoc.addPage([viewport.width / REDACT_RASTER_SCALE, viewport.height / REDACT_RASTER_SCALE]);
+      outPage.drawImage(img, { x: 0, y: 0, width: viewport.width / REDACT_RASTER_SCALE, height: viewport.height / REDACT_RASTER_SCALE });
+    }
+    return outDoc.save();
+  }
+
   const COMPRESS_PRESETS = {
     light: { quality: 0.82, maxDim: 2200 },
     recommended: { quality: 0.62, maxDim: 1600 },
@@ -1232,6 +1503,10 @@
     }
     if (opts && opts.compress) {
       await compressImagesInDoc(outDoc, opts.compress);
+    }
+    if (opts && opts.protect) {
+      await encryptPdfDocument(outDoc, opts.protect.password);
+      return outDoc.save({ useObjectStreams: false });
     }
     return outDoc.save();
   }
@@ -1756,7 +2031,40 @@
     sec2.appendChild(el("div", "hint", "Tap the checkmark icon above the page list to select several pages, then extract them as a new PDF or delete them."));
     wrap.appendChild(sec2);
     wrap.appendChild(sectionCompress());
+    wrap.appendChild(sectionProtect());
     return wrap;
+  }
+
+  function sectionProtect() {
+    const sec = el("div", "panel-section");
+    sec.appendChild(el("h3", "", "Password protect"));
+    sec.appendChild(el("div", "hint", "Encrypts the exported PDF (AES-128) so it can only be opened with this password. Anyone without it cannot open the file at all."));
+    const pw1 = document.createElement("input");
+    pw1.type = "password"; pw1.placeholder = "Password"; pw1.style.width = "100%"; pw1.autocomplete = "new-password";
+    const pw2 = document.createElement("input");
+    pw2.type = "password"; pw2.placeholder = "Confirm password"; pw2.style.width = "100%"; pw2.style.marginTop = "6px"; pw2.autocomplete = "new-password";
+    sec.appendChild(pw1);
+    sec.appendChild(pw2);
+    const btn = document.createElement("button");
+    btn.className = "btn btn-primary"; btn.style.width = "100%"; btn.style.justifyContent = "center"; btn.style.marginTop = "10px";
+    btn.textContent = "Protect & download";
+    btn.addEventListener("click", async () => {
+      const p1 = pw1.value, p2 = pw2.value;
+      if (!p1) { toast("Enter a password", "err"); return; }
+      if (p1 !== p2) { toast("Passwords don't match", "err"); return; }
+      setStatus("Encrypting…");
+      try {
+        const bytes = await buildOutputDoc(null, { protect: { password: p1 } });
+        const name = (state.docLabel || "document").replace(/\.pdf$/i, "") + "-protected.pdf";
+        await triggerDownload(bytes, name);
+        pw1.value = ""; pw2.value = "";
+      } catch (e) {
+        console.error(e);
+        toast("Protection failed: " + e.message, "err");
+      } finally { setStatus(""); }
+    });
+    sec.appendChild(btn);
+    return sec;
   }
 
   function sectionCompress() {
